@@ -1,0 +1,74 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String          @id @default(cuid())
+  googleId     String          @unique
+  email        String          @unique
+  name         String
+  avatarUrl    String?
+  username     String          @unique
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  sentRequests FriendRequest[] @relation("SentRequests")
+  recvRequests FriendRequest[] @relation("ReceivedRequests")
+  messages     Message[]       @relation("UserMessages")
+}
+
+model FriendRequest {
+  id         String   @id @default(cuid())
+  fromUserId String
+  toUserId   String
+  status     String   @default("pending")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  fromUser   User     @relation("SentRequests", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser     User     @relation("ReceivedRequests", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@index([toUserId, status])
+  @@index([fromUserId, status])
+}
+
+model Conversation {
+  id             String    @id @default(cuid())
+  participantIds String[]
+  pairKey        String    @unique
+  lastMessageAt  DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  messages       Message[]
+
+  @@index([lastMessageAt])
+}
+
+model Message {
+  id                   String       @id @default(cuid())
+  conversationId       String
+  content              String
+  senderId             String
+  isDeletedForEveryone Boolean      @default(false)
+  deletedFor           String[]
+  isPinned             Boolean      @default(false)
+  pinnedBy             String?
+  pinnedAt             DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  conversation         Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender               User         @relation("UserMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+}

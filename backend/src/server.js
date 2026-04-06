@@ -1,18 +1,14 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 
 const cors = require('cors');
 const express = require('express');
 const http = require('http');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
-const mongoose = require('mongoose');
 const { Server } = require('socket.io');
 
 const connectDB = require('./config/db');
-const Conversation = require('./models/Conversation');
-const FriendRequest = require('./models/FriendRequest');
-const Message = require('./models/Message');
-const User = require('./models/User');
+const prisma = require('./lib/prisma');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,9 +42,20 @@ function conversationRoom(conversationId) {
 
 function toPublicUser(user) {
   return {
-    id: user._id,
+    _id: user.id,
+    id: user.id,
     name: user.name,
     email: user.email,
+    username: user.username,
+    avatarUrl: user.avatarUrl,
+  };
+}
+
+function toParticipantUser(user) {
+  return {
+    _id: user.id,
+    id: user.id,
+    name: user.name,
     username: user.username,
     avatarUrl: user.avatarUrl,
   };
@@ -66,16 +73,22 @@ async function generateUniqueUsername(seed) {
     .replace(/^_+|_+$/g, '')
     .slice(0, 18) || 'user';
 
-  for (let i = 0; i < 30; i += 1) {
-    const suffix = Math.random().toString(36).slice(2, 6);
-    const candidate = `${base}_${suffix}`.slice(0, 24);
-    const exists = await User.exists({ username: candidate });
+  const baseExists = await prisma.user.findUnique({ where: { username: base } });
+  if (!baseExists) {
+    return base.slice(0, 24);
+  }
+
+  for (let i = 2; i < 500; i += 1) {
+    const suffix = `_${i}`;
+    const candidate = `${base.slice(0, 24 - suffix.length)}${suffix}`;
+    // eslint-disable-next-line no-await-in-loop
+    const exists = await prisma.user.findUnique({ where: { username: candidate } });
     if (!exists) {
       return candidate;
     }
   }
 
-  return `user_${Date.now().toString().slice(-6)}`;
+  return `${base.slice(0, 20)}_user`;
 }
 
 function parseBearerToken(req) {
@@ -102,20 +115,13 @@ function requireAuth(req, res, next) {
 }
 
 async function getConversationIfMember(conversationId, userId) {
-  if (!mongoose.Types.ObjectId.isValid(conversationId)) {
-    return null;
-  }
+  const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
 
-  const conversation = await Conversation.findById(conversationId);
   if (!conversation) {
     return null;
   }
 
-  const isMember = conversation.participantIds.some(
-    (participantId) => String(participantId) === String(userId)
-  );
-
-  if (!isMember) {
+  if (!conversation.participantIds.includes(String(userId))) {
     return null;
   }
 
@@ -126,22 +132,21 @@ async function emitToConversationParticipants(conversation, eventName, payload) 
   for (const participantId of conversation.participantIds) {
     io.to(userRoom(participantId)).emit(eventName, payload);
   }
-  io.to(conversationRoom(conversation._id)).emit(eventName, payload);
+  io.to(conversationRoom(conversation.id)).emit(eventName, payload);
 }
 
-async function serializeMessage(messageDoc) {
-  const populated = await messageDoc.populate('senderId', 'name username avatarUrl');
+function serializeMessage(message) {
   return {
-    _id: populated._id,
-    conversationId: populated.conversationId,
-    content: populated.content,
-    sender: populated.senderId,
-    isDeletedForEveryone: populated.isDeletedForEveryone,
-    isPinned: populated.isPinned,
-    pinnedBy: populated.pinnedBy,
-    pinnedAt: populated.pinnedAt,
-    createdAt: populated.createdAt,
-    updatedAt: populated.updatedAt,
+    _id: message.id,
+    conversationId: message.conversationId,
+    content: message.content,
+    sender: message.sender ? toParticipantUser(message.sender) : null,
+    isDeletedForEveryone: message.isDeletedForEveryone,
+    isPinned: message.isPinned,
+    pinnedBy: message.pinnedBy,
+    pinnedAt: message.pinnedAt,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
   };
 }
 
@@ -166,7 +171,7 @@ io.on('connection', async (socket) => {
   socket.on('conversation:join', async (conversationId) => {
     const conversation = await getConversationIfMember(conversationId, socket.userId);
     if (conversation) {
-      socket.join(conversationRoom(conversation._id));
+      socket.join(conversationRoom(conversation.id));
     }
   });
 
@@ -200,23 +205,29 @@ app.post('/api/auth/google', async (req, res) => {
       return res.status(400).json({ error: 'Google token missing required profile fields' });
     }
 
-    let user = await User.findOne({ googleId: payload.sub });
+    let user = await prisma.user.findUnique({ where: { googleId: payload.sub } });
 
     if (!user) {
-      user = await User.create({
-        googleId: payload.sub,
-        email: payload.email,
-        name: payload.name,
-        avatarUrl: payload.picture || null,
-        username: await generateUniqueUsername(payload.email.split('@')[0]),
+      user = await prisma.user.create({
+        data: {
+          googleId: payload.sub,
+          email: payload.email,
+          name: payload.name,
+          avatarUrl: payload.picture || null,
+          username: await generateUniqueUsername(payload.email.split('@')[0]),
+        },
       });
     } else {
-      user.name = payload.name;
-      user.avatarUrl = payload.picture || user.avatarUrl;
-      await user.save();
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          name: payload.name,
+          avatarUrl: payload.picture || user.avatarUrl,
+        },
+      });
     }
 
-    const token = jwt.sign({ sub: user._id.toString() }, jwtSecret, { expiresIn: '7d' });
+    const token = jwt.sign({ sub: user.id }, jwtSecret, { expiresIn: '7d' });
 
     return res.json({ token, user: toPublicUser(user) });
   } catch (error) {
@@ -226,7 +237,7 @@ app.post('/api/auth/google', async (req, res) => {
 });
 
 app.get('/api/users/me', requireAuth, async (req, res) => {
-  const user = await User.findById(req.userId);
+  const user = await prisma.user.findUnique({ where: { id: req.userId } });
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
@@ -239,12 +250,21 @@ app.patch('/api/users/me/username', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Username must be 3-24 chars: a-z, 0-9, _' });
   }
 
-  const existing = await User.findOne({ username, _id: { $ne: req.userId } });
+  const existing = await prisma.user.findFirst({
+    where: {
+      username,
+      NOT: { id: req.userId },
+    },
+  });
+
   if (existing) {
     return res.status(409).json({ error: 'Username already taken' });
   }
 
-  const updated = await User.findByIdAndUpdate(req.userId, { username }, { new: true });
+  const updated = await prisma.user.update({
+    where: { id: req.userId },
+    data: { username },
+  });
 
   return res.json(toPublicUser(updated));
 });
@@ -255,15 +275,16 @@ app.get('/api/users/search', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Search term must be at least 2 characters' });
   }
 
-  const users = await User.find({
-    _id: { $ne: req.userId },
-    username: { $regex: `^${term}`, $options: 'i' },
-  })
-    .select('name username avatarUrl')
-    .limit(10)
-    .lean();
+  const users = await prisma.user.findMany({
+    where: {
+      NOT: { id: req.userId },
+      username: { startsWith: term, mode: 'insensitive' },
+    },
+    select: { id: true, name: true, username: true, avatarUrl: true },
+    take: 10,
+  });
 
-  return res.json(users);
+  return res.json(users.map(toParticipantUser));
 });
 
 app.post('/api/friend-requests', requireAuth, async (req, res) => {
@@ -273,74 +294,90 @@ app.post('/api/friend-requests', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'toUsername is required' });
     }
 
-    const fromUser = await User.findById(req.userId);
-    const toUser = await User.findOne({ username: toUsername });
+    const fromUser = await prisma.user.findUnique({ where: { id: req.userId } });
+    const toUser = await prisma.user.findUnique({ where: { username: toUsername } });
 
     if (!fromUser || !toUser) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    if (String(toUser._id) === String(fromUser._id)) {
+    if (toUser.id === fromUser.id) {
       return res.status(400).json({ error: 'You cannot send a request to yourself' });
     }
 
-    const accepted = await FriendRequest.findOne({
-      status: 'accepted',
-      $or: [
-        { fromUserId: fromUser._id, toUserId: toUser._id },
-        { fromUserId: toUser._id, toUserId: fromUser._id },
-      ],
+    const accepted = await prisma.friendRequest.findFirst({
+      where: {
+        status: 'accepted',
+        OR: [
+          { fromUserId: fromUser.id, toUserId: toUser.id },
+          { fromUserId: toUser.id, toUserId: fromUser.id },
+        ],
+      },
     });
 
     if (accepted) {
       return res.status(409).json({ error: 'You are already friends' });
     }
 
-    const reversePending = await FriendRequest.findOne({
-      fromUserId: toUser._id,
-      toUserId: fromUser._id,
-      status: 'pending',
+    const reversePending = await prisma.friendRequest.findFirst({
+      where: {
+        fromUserId: toUser.id,
+        toUserId: fromUser.id,
+        status: 'pending',
+      },
     });
 
     if (reversePending) {
-      reversePending.status = 'accepted';
-      await reversePending.save();
+      await prisma.friendRequest.update({
+        where: { id: reversePending.id },
+        data: { status: 'accepted' },
+      });
 
-      const pairKey = makePairKey(fromUser._id, toUser._id);
-      const conversation = await Conversation.findOneAndUpdate(
-        { pairKey },
-        {
-          pairKey,
-          participantIds: [fromUser._id, toUser._id],
+      const pairKey = makePairKey(fromUser.id, toUser.id);
+      const conversation = await prisma.conversation.upsert({
+        where: { pairKey },
+        update: {
+          participantIds: [fromUser.id, toUser.id],
           lastMessageAt: new Date(),
         },
-        { new: true, upsert: true }
-      );
-
-      io.to(userRoom(toUser._id)).emit('friend:accepted', {
-        byUser: toPublicUser(fromUser),
-        conversationId: conversation._id,
+        create: {
+          pairKey,
+          participantIds: [fromUser.id, toUser.id],
+          lastMessageAt: new Date(),
+        },
       });
-      io.to(userRoom(fromUser._id)).emit('friend:accepted', {
+
+      io.to(userRoom(toUser.id)).emit('friend:accepted', {
+        byUser: toPublicUser(fromUser),
+        conversationId: conversation.id,
+      });
+      io.to(userRoom(fromUser.id)).emit('friend:accepted', {
         byUser: toPublicUser(toUser),
-        conversationId: conversation._id,
+        conversationId: conversation.id,
       });
 
       return res.json({ message: 'Friend request auto-accepted from reverse pending request' });
     }
 
-    const request = await FriendRequest.findOneAndUpdate(
-      { fromUserId: fromUser._id, toUserId: toUser._id },
-      {
-        fromUserId: fromUser._id,
-        toUserId: toUser._id,
+    const request = await prisma.friendRequest.upsert({
+      where: {
+        fromUserId_toUserId: {
+          fromUserId: fromUser.id,
+          toUserId: toUser.id,
+        },
+      },
+      update: {
         status: 'pending',
       },
-      { new: true, upsert: true }
-    );
+      create: {
+        fromUserId: fromUser.id,
+        toUserId: toUser.id,
+        status: 'pending',
+      },
+    });
 
-    io.to(userRoom(toUser._id)).emit('friend:request', {
-      requestId: request._id,
+    io.to(userRoom(toUser.id)).emit('friend:request', {
+      requestId: request.id,
       fromUser: toPublicUser(fromUser),
     });
 
@@ -352,19 +389,29 @@ app.post('/api/friend-requests', requireAuth, async (req, res) => {
 });
 
 app.get('/api/friend-requests/incoming', requireAuth, async (req, res) => {
-  const requests = await FriendRequest.find({
-    toUserId: req.userId,
-    status: 'pending',
-  })
-    .populate('fromUserId', 'name username avatarUrl')
-    .sort({ createdAt: -1 })
-    .lean();
+  const requests = await prisma.friendRequest.findMany({
+    where: {
+      toUserId: req.userId,
+      status: 'pending',
+    },
+    include: {
+      fromUser: {
+        select: {
+          id: true,
+          name: true,
+          username: true,
+          avatarUrl: true,
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
   return res.json(
     requests.map((request) => ({
-      _id: request._id,
+      _id: request.id,
       createdAt: request.createdAt,
-      fromUser: request.fromUserId,
+      fromUser: toParticipantUser(request.fromUser),
     }))
   );
 });
@@ -376,12 +423,12 @@ app.patch('/api/friend-requests/:id', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'action must be accept or reject' });
     }
 
-    const request = await FriendRequest.findById(req.params.id);
+    const request = await prisma.friendRequest.findUnique({ where: { id: req.params.id } });
     if (!request) {
       return res.status(404).json({ error: 'Request not found' });
     }
 
-    if (String(request.toUserId) !== String(req.userId)) {
+    if (request.toUserId !== req.userId) {
       return res.status(403).json({ error: 'Not allowed' });
     }
 
@@ -389,28 +436,33 @@ app.patch('/api/friend-requests/:id', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Request already processed' });
     }
 
-    request.status = action === 'accept' ? 'accepted' : 'rejected';
-    await request.save();
+    const updated = await prisma.friendRequest.update({
+      where: { id: request.id },
+      data: { status: action === 'accept' ? 'accepted' : 'rejected' },
+    });
 
     if (action === 'accept') {
-      const pairKey = makePairKey(request.fromUserId, request.toUserId);
-      const conversation = await Conversation.findOneAndUpdate(
-        { pairKey },
-        {
-          pairKey,
-          participantIds: [request.fromUserId, request.toUserId],
+      const pairKey = makePairKey(updated.fromUserId, updated.toUserId);
+      const conversation = await prisma.conversation.upsert({
+        where: { pairKey },
+        update: {
+          participantIds: [updated.fromUserId, updated.toUserId],
           lastMessageAt: new Date(),
         },
-        { new: true, upsert: true }
-      );
-
-      io.to(userRoom(request.fromUserId)).emit('friend:accepted', {
-        byUserId: request.toUserId,
-        conversationId: conversation._id,
+        create: {
+          pairKey,
+          participantIds: [updated.fromUserId, updated.toUserId],
+          lastMessageAt: new Date(),
+        },
       });
-      io.to(userRoom(request.toUserId)).emit('friend:accepted', {
-        byUserId: request.fromUserId,
-        conversationId: conversation._id,
+
+      io.to(userRoom(updated.fromUserId)).emit('friend:accepted', {
+        byUserId: updated.toUserId,
+        conversationId: conversation.id,
+      });
+      io.to(userRoom(updated.toUserId)).emit('friend:accepted', {
+        byUserId: updated.fromUserId,
+        conversationId: conversation.id,
       });
     }
 
@@ -422,41 +474,60 @@ app.patch('/api/friend-requests/:id', requireAuth, async (req, res) => {
 });
 
 app.get('/api/friends', requireAuth, async (req, res) => {
-  const accepted = await FriendRequest.find({
-    status: 'accepted',
-    $or: [{ fromUserId: req.userId }, { toUserId: req.userId }],
-  }).lean();
+  const accepted = await prisma.friendRequest.findMany({
+    where: {
+      status: 'accepted',
+      OR: [{ fromUserId: req.userId }, { toUserId: req.userId }],
+    },
+  });
 
   const friendIds = accepted.map((item) =>
-    String(item.fromUserId) === String(req.userId) ? item.toUserId : item.fromUserId
+    item.fromUserId === req.userId ? item.toUserId : item.fromUserId
   );
 
-  const friends = await User.find({ _id: { $in: friendIds } })
-    .select('name username avatarUrl')
-    .lean();
+  const friends = await prisma.user.findMany({
+    where: { id: { in: friendIds } },
+    select: { id: true, name: true, username: true, avatarUrl: true },
+  });
 
-  return res.json(friends);
+  return res.json(friends.map(toParticipantUser));
 });
 
 app.get('/api/conversations', requireAuth, async (req, res) => {
-  const conversations = await Conversation.find({ participantIds: req.userId })
-    .populate('participantIds', 'name username avatarUrl')
-    .sort({ lastMessageAt: -1 })
-    .lean();
+  const conversations = await prisma.conversation.findMany({
+    where: {
+      participantIds: { has: req.userId },
+    },
+    orderBy: { lastMessageAt: 'desc' },
+  });
+
+  const uniqueParticipantIds = [...new Set(conversations.flatMap((item) => item.participantIds))];
+  const participantUsers = await prisma.user.findMany({
+    where: { id: { in: uniqueParticipantIds } },
+    select: { id: true, name: true, username: true, avatarUrl: true },
+  });
+
+  const userMap = new Map(participantUsers.map((user) => [user.id, user]));
 
   const response = await Promise.all(
     conversations.map(async (conversation) => {
-      const lastMessage = await Message.findOne({
-        conversationId: conversation._id,
-        deletedFor: { $ne: req.userId },
-      })
-        .sort({ createdAt: -1 })
-        .select('content isDeletedForEveryone createdAt')
-        .lean();
+      const lastMessage = await prisma.message.findFirst({
+        where: {
+          conversationId: conversation.id,
+          NOT: {
+            deletedFor: { has: req.userId },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { content: true, isDeletedForEveryone: true, createdAt: true },
+      });
 
       return {
-        _id: conversation._id,
-        participants: conversation.participantIds,
+        _id: conversation.id,
+        participants: conversation.participantIds
+          .map((id) => userMap.get(id))
+          .filter(Boolean)
+          .map(toParticipantUser),
         lastMessage,
         lastMessageAt: conversation.lastMessageAt,
       };
@@ -475,29 +546,28 @@ app.get('/api/conversations/:id/messages', requireAuth, async (req, res) => {
 
     const limit = Math.min(Number(req.query.limit) || 100, 200);
 
-    const messages = await Message.find({
-      conversationId: conversation._id,
-      deletedFor: { $ne: req.userId },
-    })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .populate('senderId', 'name username avatarUrl')
-      .lean();
+    const messages = await prisma.message.findMany({
+      where: {
+        conversationId: conversation.id,
+        NOT: {
+          deletedFor: { has: req.userId },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: {
+        sender: {
+          select: {
+            id: true,
+            name: true,
+            username: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
 
-    return res.json(
-      messages.reverse().map((message) => ({
-        _id: message._id,
-        conversationId: message.conversationId,
-        content: message.content,
-        sender: message.senderId,
-        isDeletedForEveryone: message.isDeletedForEveryone,
-        isPinned: message.isPinned,
-        pinnedBy: message.pinnedBy,
-        pinnedAt: message.pinnedAt,
-        createdAt: message.createdAt,
-        updatedAt: message.updatedAt,
-      }))
-    );
+    return res.json(messages.reverse().map(serializeMessage));
   } catch (error) {
     console.error('Fetch messages error:', error);
     return res.status(500).json({ error: 'Failed to fetch messages' });
@@ -521,16 +591,30 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Message content exceeds 500 characters' });
     }
 
-    const message = await Message.create({
-      conversationId: conversation._id,
-      content,
-      senderId: req.userId,
+    const message = await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        content,
+        senderId: req.userId,
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            name: true,
+            username: true,
+            avatarUrl: true,
+          },
+        },
+      },
     });
 
-    conversation.lastMessageAt = new Date();
-    await conversation.save();
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { lastMessageAt: new Date() },
+    });
 
-    const payload = await serializeMessage(message);
+    const payload = serializeMessage(message);
     await emitToConversationParticipants(conversation, 'conversation:messageCreated', payload);
 
     return res.status(201).json(payload);
@@ -542,11 +626,7 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
 
 app.patch('/api/messages/:id/delete-for-me', requireAuth, async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-
-    const message = await Message.findById(req.params.id);
+    const message = await prisma.message.findUnique({ where: { id: req.params.id } });
 
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
@@ -557,14 +637,18 @@ app.patch('/api/messages/:id/delete-for-me', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Not allowed' });
     }
 
-    if (!message.deletedFor.some((id) => String(id) === String(req.userId))) {
-      message.deletedFor.push(req.userId);
-      await message.save();
-    }
+    const deletedFor = message.deletedFor.includes(req.userId)
+      ? message.deletedFor
+      : [...message.deletedFor, req.userId];
+
+    await prisma.message.update({
+      where: { id: message.id },
+      data: { deletedFor },
+    });
 
     return res.json({
       message: 'Message deleted for current user',
-      id: message._id,
+      id: message.id,
     });
   } catch (error) {
     console.error('Delete for me error:', error);
@@ -574,11 +658,7 @@ app.patch('/api/messages/:id/delete-for-me', requireAuth, async (req, res) => {
 
 app.patch('/api/messages/:id/delete-for-everyone', requireAuth, async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-
-    const message = await Message.findById(req.params.id);
+    const message = await prisma.message.findUnique({ where: { id: req.params.id } });
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
     }
@@ -588,19 +668,32 @@ app.patch('/api/messages/:id/delete-for-everyone', requireAuth, async (req, res)
       return res.status(403).json({ error: 'Not allowed' });
     }
 
-    if (String(message.senderId) !== String(req.userId)) {
+    if (message.senderId !== req.userId) {
       return res.status(403).json({ error: 'Only the sender can delete for everyone' });
     }
 
-    message.isDeletedForEveryone = true;
-    message.content = 'This message was deleted';
-    message.isPinned = false;
-    message.pinnedBy = null;
-    message.pinnedAt = null;
+    const updated = await prisma.message.update({
+      where: { id: message.id },
+      data: {
+        isDeletedForEveryone: true,
+        content: 'This message was deleted',
+        isPinned: false,
+        pinnedBy: null,
+        pinnedAt: null,
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            name: true,
+            username: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
 
-    await message.save();
-
-    const payload = await serializeMessage(message);
+    const payload = serializeMessage(updated);
     await emitToConversationParticipants(conversation, 'conversation:messageUpdated', payload);
 
     return res.json(payload);
@@ -612,11 +705,7 @@ app.patch('/api/messages/:id/delete-for-everyone', requireAuth, async (req, res)
 
 app.patch('/api/messages/:id/pin', requireAuth, async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-
-    const message = await Message.findById(req.params.id);
+    const message = await prisma.message.findUnique({ where: { id: req.params.id } });
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
     }
@@ -630,13 +719,26 @@ app.patch('/api/messages/:id/pin', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Deleted messages cannot be pinned' });
     }
 
-    message.isPinned = !message.isPinned;
-    message.pinnedBy = message.isPinned ? req.userId : null;
-    message.pinnedAt = message.isPinned ? new Date() : null;
+    const updated = await prisma.message.update({
+      where: { id: message.id },
+      data: {
+        isPinned: !message.isPinned,
+        pinnedBy: message.isPinned ? null : req.userId,
+        pinnedAt: message.isPinned ? null : new Date(),
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            name: true,
+            username: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
 
-    await message.save();
-
-    const payload = await serializeMessage(message);
+    const payload = serializeMessage(updated);
     await emitToConversationParticipants(conversation, 'conversation:messageUpdated', payload);
 
     return res.json(payload);

@@ -26,3 +26,5 @@ Thumbs.db
 .idea/
 *.suo
 *.swp
+
+/src/generated/prisma

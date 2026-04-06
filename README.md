@@ -3,13 +3,13 @@
 This project uses:
 - Frontend: React (Vite)
 - Backend: Node.js + Express + Socket.IO + JWT
-- Database: MongoDB + Mongoose
+- Database: PostgreSQL + Prisma ORM
 - Auth: Google OAuth (ID Token verification)
 
 ## Project Structure
 
 - `frontend/` - Chat UI
-- `backend/` - REST API, real-time server, MongoDB models
+- `backend/` - REST API, real-time server, Prisma/PostgreSQL models
 
 ## Features Implemented
 
@@ -24,20 +24,31 @@ This project uses:
 - Delete for everyone (sender only)
 - Pin and unpin messages
 - Real-time updates using Socket.IO
-- Input validation and persistence through MongoDB Atlas/local MongoDB
+- Input validation and persistence through PostgreSQL
 
 ## Backend Setup
 
 1. Go to backend folder:
    - `cd backend`
 2. Create `.env` from `.env.example` and set:
-   - `MONGO_URI`
+   - `DATABASE_URL`
    - `GOOGLE_CLIENT_ID`
    - `JWT_SECRET`
    - `CLIENT_ORIGIN`
-3. Run server:
+3. Initialize schema:
+   - `npm run prisma:generate`
+   - `npm run prisma:migrate`
+4. Run server:
    - Development: `npm run dev`
    - Production: `npm start`
+
+### Quick No-DB Mode
+
+If you want to run all chat features without setting up PostgreSQL yet, set this in `backend/.env`:
+
+- `USE_IN_MEMORY_STORE=true`
+
+This enables login, friend requests, chats, pin/delete, and realtime messaging with in-memory data.
 
 Backend runs on `http://localhost:5000` by default.
 
