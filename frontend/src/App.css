@@ -1,0 +1,170 @@
+.center-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 20px;
+}
+
+.layout {
+  min-height: 100vh;
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+  padding: 16px;
+}
+
+.sidebar,
+.chat-main {
+  border: 1px solid #d8ccb9;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.sidebar {
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.profile-card h2,
+.profile-card p {
+  margin: 0;
+}
+
+.profile-card button,
+.friend-form button,
+.inline-actions button,
+.composer button {
+  border: 0;
+  border-radius: 8px;
+  background: #d9ceb8;
+  color: #2c241a;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.friend-form {
+  display: grid;
+  gap: 8px;
+}
+
+.friend-form input,
+.composer input {
+  border: 1px solid #d0c3ac;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 0.95rem;
+}
+
+.request-panel ul,
+.conversation-panel ul,
+.messages ul,
+.pinned-section ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.request-panel li,
+.pinned-section li,
+.messages li {
+  border: 1px solid #dfd4c3;
+  border-radius: 10px;
+  background: #fff9f1;
+  padding: 8px;
+}
+
+.request-panel small,
+.conversation-panel small,
+.messages small {
+  display: block;
+  color: #675f53;
+}
+
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.conversation-panel li button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #dfd4c3;
+  border-radius: 10px;
+  background: #fff9f1;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.conversation-panel li button.active {
+  background: #f2e5d1;
+  border-color: #cab28d;
+}
+
+.chat-main {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto auto;
+  gap: 10px;
+  padding: 12px;
+}
+
+.chat-top h2,
+.pinned-section h3 {
+  margin: 0;
+}
+
+.messages {
+  overflow: auto;
+  min-height: 300px;
+}
+
+.messages li.own {
+  border-color: #c6d5a3;
+  background: #f9ffea;
+}
+
+.messages p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.messages p.deleted {
+  font-style: italic;
+  color: #7c766c;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.muted {
+  color: #6a6155;
+  margin: 0;
+}
+
+.error-text {
+  color: #8f1f1f;
+  background: #f8d9d9;
+  border: 1px solid #eab8b8;
+  border-radius: 8px;
+  padding: 8px;
+  margin: 0;
+}
+
+@media (max-width: 960px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
