@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
 import { io } from 'socket.io-client'
 
@@ -15,6 +15,9 @@ export function useTalkieSession() {
   const [incomingRequests, setIncomingRequests] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [socketConnected, setSocketConnected] = useState(false)
+  const socketRef = useRef(null)
+  const selectedConversationIdRef = useRef('')
 
   const api = useMemo(
     () =>
@@ -27,6 +30,11 @@ export function useTalkieSession() {
 
   const logout = () => {
     window.localStorage.removeItem('talkie-auth-token')
+    if (socketRef.current) {
+      socketRef.current.disconnect()
+      socketRef.current = null
+    }
+    setSocketConnected(false)
     setToken('')
     setMe(null)
     setConversations([])
@@ -130,6 +138,9 @@ export function useTalkieSession() {
 
   const selectConversation = async (conversationId) => {
     setSelectedConversationId(conversationId)
+    if (socketRef.current && conversationId) {
+      socketRef.current.emit('conversation:join', conversationId)
+    }
     await refreshMessages(conversationId)
   }
 
@@ -146,6 +157,29 @@ export function useTalkieSession() {
     await refreshConversations()
   }
 
+  const deleteMessageForMe = async (messageId) => {
+    await api.patch(`/api/messages/${messageId}/delete-for-me`)
+    setMessages((current) => current.filter((item) => item._id !== messageId))
+    await refreshConversations()
+  }
+
+  const deleteMessageForEveryone = async (messageId) => {
+    const response = await api.patch(`/api/messages/${messageId}/delete-for-everyone`)
+    const updatedMessage = response.data
+    setMessages((current) =>
+      current.map((item) => (item._id === updatedMessage._id ? updatedMessage : item)),
+    )
+    await refreshConversations()
+  }
+
+  const togglePinMessage = async (messageId) => {
+    const response = await api.patch(`/api/messages/${messageId}/pin`)
+    const updatedMessage = response.data
+    setMessages((current) =>
+      current.map((item) => (item._id === updatedMessage._id ? updatedMessage : item)),
+    )
+  }
+
   const updateUsername = async (username) => {
     const response = await api.patch('/api/users/me/username', { username })
     setMe((current) => (current ? { ...current, ...response.data } : response.data))
@@ -158,12 +192,34 @@ export function useTalkieSession() {
   }, [token])
 
   useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId
+  }, [selectedConversationId])
+
+  useEffect(() => {
     if (!token) {
       return undefined
     }
 
     const socket = io(SOCKET_URL, {
       auth: { token },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 600,
+      reconnectionDelayMax: 3000,
+    })
+
+    socketRef.current = socket
+
+    socket.on('connect', () => {
+      setSocketConnected(true)
+      if (selectedConversationIdRef.current) {
+        socket.emit('conversation:join', selectedConversationIdRef.current)
+      }
+    })
+
+    socket.on('disconnect', () => {
+      setSocketConnected(false)
     })
 
     socket.on('friend:request', () => {
@@ -174,6 +230,7 @@ export function useTalkieSession() {
       await Promise.all([refreshConversations(), refreshIncomingRequests(), refreshFriends()])
       if (payload?.conversationId) {
         setSelectedConversationId(payload.conversationId)
+        socket.emit('conversation:join', payload.conversationId)
         await refreshMessages(payload.conversationId)
       }
     })
@@ -197,30 +254,42 @@ export function useTalkieSession() {
           .sort((left, right) => new Date(right.lastMessageAt) - new Date(left.lastMessageAt)),
       )
 
-      if (message.conversationId === selectedConversationId) {
-        setMessages((current) => {
-          if (current.some((item) => item._id === message._id)) {
-            return current
-          }
-          return [...current, message]
-        })
-      }
+      setMessages((current) => {
+        if (message.conversationId !== selectedConversationIdRef.current) {
+          return current
+        }
+        if (current.some((item) => item._id === message._id)) {
+          return current
+        }
+        return [...current, message]
+      })
     })
 
     socket.on('conversation:messageUpdated', (updatedMessage) => {
-      if (updatedMessage.conversationId === selectedConversationId) {
-        setMessages((current) =>
-          current.map((item) => (item._id === updatedMessage._id ? updatedMessage : item)),
-        )
-      }
+      setMessages((current) => {
+        if (updatedMessage.conversationId !== selectedConversationIdRef.current) {
+          return current
+        }
+        return current.map((item) => (item._id === updatedMessage._id ? updatedMessage : item))
+      })
       refreshConversations()
     })
 
     return () => {
       socket.disconnect()
+      if (socketRef.current === socket) {
+        socketRef.current = null
+      }
+      setSocketConnected(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, selectedConversationId])
+  }, [token])
+
+  useEffect(() => {
+    if (socketRef.current && selectedConversationId) {
+      socketRef.current.emit('conversation:join', selectedConversationId)
+    }
+  }, [selectedConversationId])
 
   return {
     api,
@@ -234,6 +303,7 @@ export function useTalkieSession() {
     messages,
     error,
     loading,
+    socketConnected,
     setError,
     logout,
     loginWithGoogle,
@@ -245,6 +315,9 @@ export function useTalkieSession() {
     respondToRequest,
     selectConversation,
     sendMessage,
+    deleteMessageForMe,
+    deleteMessageForEveryone,
+    togglePinMessage,
     updateUsername,
   }
 }

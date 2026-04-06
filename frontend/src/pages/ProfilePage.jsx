@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Camera, Check, PencilLine, ShieldCheck } from 'lucide-react'
+import { Check, Copy, PencilLine, ShieldCheck } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useTalkie } from '../context/TalkieContext'
 
@@ -20,6 +20,18 @@ export function ProfilePage() {
   const [message, setMessage] = useState('')
 
   const suggestedUsername = useMemo(() => deriveUsernameHint(me), [me])
+
+  const copyValue = async (value, label) => {
+    if (!value) {
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(value)
+      setMessage(`${label} copied`)
+    } catch (_error) {
+      setMessage(`Could not copy ${label.toLowerCase()}`)
+    }
+  }
 
   const handleSave = async (event) => {
     event.preventDefault()
@@ -57,9 +69,6 @@ export function ProfilePage() {
 
         <div className="profile-avatar-large">
           <span>{me?.username?.[0]?.toUpperCase() || 'T'}</span>
-          <button type="button" className="avatar-overlay" aria-label="Change avatar">
-            <Camera size={18} />
-          </button>
         </div>
       </motion.section>
 
@@ -99,6 +108,32 @@ export function ProfilePage() {
           <div className="hint-row">
             <span>Suggested: @{suggestedUsername}</span>
             <span>Use lowercase, numbers, and underscores only</span>
+          </div>
+
+          <div className="profile-actions">
+            <button
+              type="button"
+              className="soft-button profile-action-button"
+              onClick={() => setDraft(suggestedUsername)}
+            >
+              Use suggestion
+            </button>
+            <button
+              type="button"
+              className="soft-button profile-action-button"
+              onClick={() => copyValue(me?.username || '', 'Username')}
+            >
+              <Copy size={14} />
+              Copy username
+            </button>
+            <button
+              type="button"
+              className="soft-button profile-action-button"
+              onClick={() => copyValue(me?.email || '', 'Email')}
+            >
+              <Copy size={14} />
+              Copy email
+            </button>
           </div>
 
           <button className="primary-button" type="submit" disabled={saving}>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowRight, MessageSquare, MoreVertical, Send, UserPlus } from 'lucide-react'
+import { MessageSquare, MoreVertical, Pin, Send, Trash2, UserPlus } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTalkie } from '../context/TalkieContext'
 import { useNavigate } from 'react-router-dom'
@@ -16,12 +16,17 @@ export function ChatPage() {
     selectedConversationId,
     selectConversation,
     sendMessage,
+    deleteMessageForMe,
+    deleteMessageForEveryone,
+    togglePinMessage,
+    setError,
     refreshMessages,
   } = useTalkie()
   const navigate = useNavigate()
 
   const [draft, setDraft] = useState('')
   const [conversationLoading, setConversationLoading] = useState(false)
+  const [messageActionId, setMessageActionId] = useState('')
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation._id === selectedConversationId),
@@ -29,6 +34,10 @@ export function ChatPage() {
   )
 
   const partner = selectedConversation?.participants?.find((user) => user._id !== me?.id)
+  const pinnedMessages = useMemo(
+    () => messages.filter((message) => message.isPinned && !message.isDeletedForEveryone),
+    [messages],
+  )
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -59,6 +68,18 @@ export function ChatPage() {
 
     await sendMessage(content)
     setDraft('')
+  }
+
+  const runMessageAction = async (actionId, action) => {
+    try {
+      setMessageActionId(actionId)
+      setError('')
+      await action()
+    } catch (actionError) {
+      setError(actionError.response?.data?.error || 'Message action failed')
+    } finally {
+      setMessageActionId('')
+    }
   }
 
   return (
@@ -132,9 +153,24 @@ export function ChatPage() {
               </header>
 
               <div className="message-list">
+                {pinnedMessages.length > 0 ? (
+                  <section className="pinned-strip" aria-label="Pinned messages">
+                    <span className="pinned-strip-title">Pinned</span>
+                    <div className="pinned-strip-list">
+                      {pinnedMessages.slice(0, 3).map((message) => (
+                        <article key={`pin-${message._id}`} className="pinned-strip-item">
+                          <strong>{message.sender?._id === me?.id ? 'You' : `@${message.sender?.username || 'friend'}`}</strong>
+                          <p>{message.content}</p>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+
                 <AnimatePresence>
                   {messages.map((message) => {
                     const own = message.sender?._id === me?.id
+                    const isBusy = messageActionId.startsWith(`${message._id}:`)
                     return (
                       <motion.article
                         key={message._id}
@@ -143,6 +179,41 @@ export function ChatPage() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 10 }}
                       >
+                        <div className="message-action-row">
+                          <div className="message-stamps">
+                            {message.isPinned ? <span className="message-stamp pinned">PINNED</span> : null}
+                            {message.isDeletedForEveryone ? <span className="message-stamp deleted">DELETED</span> : null}
+                          </div>
+                          <div className="message-actions">
+                            <button
+                              type="button"
+                              className="message-mini-action"
+                              onClick={() =>
+                                runMessageAction(`${message._id}:pin`, () => togglePinMessage(message._id))
+                              }
+                              disabled={isBusy || message.isDeletedForEveryone}
+                              title={message.isPinned ? 'Unpin message' : 'Pin message'}
+                            >
+                              <Pin size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              className="message-mini-action"
+                              onClick={() =>
+                                runMessageAction(
+                                  `${message._id}:delete`,
+                                  own
+                                    ? () => deleteMessageForEveryone(message._id)
+                                    : () => deleteMessageForMe(message._id),
+                                )
+                              }
+                              disabled={isBusy || message.isDeletedForEveryone}
+                              title={own ? 'Delete for everyone' : 'Delete for me'}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
                         <p>{message.content}</p>
                         <footer>
                           <span>{own ? 'You' : `@${message.sender?.username || 'friend'}`}</span>
@@ -152,8 +223,6 @@ export function ChatPage() {
                     )
                   })}
                 </AnimatePresence>
-
-                {conversationLoading ? <div className="empty-state">Loading messages...</div> : null}
                 {!conversationLoading && messages.length === 0 ? (
                   <div className="empty-state">Start the conversation with a clean first message.</div>
                 ) : null}

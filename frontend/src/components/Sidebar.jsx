@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { MessageSquare, PanelLeft, User, UserPlus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, MessageSquare, PanelLeft, User, UserPlus } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useTalkie } from '../context/TalkieContext'
 
@@ -11,12 +12,29 @@ const navItems = [
 
 export function Sidebar() {
   const { me, logout, friends, conversations, incomingRequests } = useTalkie()
+  const [collapsed, setCollapsed] = useState(true)
 
   return (
-    <aside className="sidebar-shell">
-      <div className="brand-mark">
-        <PanelLeft size={18} />
-        <span>Talkie Town</span>
+    <motion.aside
+      className={`sidebar-shell ${collapsed ? 'collapsed' : ''}`}
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.24, ease: 'easeOut' }}
+    >
+      <div className="brand-row">
+        <div className="brand-mark">
+          <PanelLeft size={18} />
+          <span>Talkie Town</span>
+        </div>
+        <button
+          type="button"
+          className="icon-button sidebar-toggle"
+          onClick={() => setCollapsed((current) => !current)}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+        </button>
       </div>
 
       <div className="profile-chip">
@@ -27,26 +45,27 @@ export function Sidebar() {
         </div>
       </div>
 
-      <nav className="nav-stack">
+      <motion.nav className="nav-stack" initial="hidden" animate="visible" variants={{ hidden: {}, visible: { transition: { staggerChildren: 0.04 } } }}>
         {navItems.map((item) => {
           const Icon = item.icon
           const badgeCount = item.badge === 'requests' ? incomingRequests.length : 0
           return (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `nav-item ${isActive ? 'active' : ''}`
-              }
-            >
-              <Icon size={18} />
-              <span>{item.label}</span>
-              {badgeCount > 0 ? <em className="nav-badge">{badgeCount}</em> : null}
-            </NavLink>
+            <motion.div key={item.to} variants={{ hidden: { opacity: 0, x: -8 }, visible: { opacity: 1, x: 0 } }}>
+              <NavLink
+                to={item.to}
+                end={item.to === '/'}
+                className={({ isActive }) =>
+                  `nav-item ${isActive ? 'active' : ''}`
+                }
+              >
+                <Icon size={18} />
+                <span>{item.label}</span>
+                {badgeCount > 0 ? <em className="nav-badge">{badgeCount}</em> : null}
+              </NavLink>
+            </motion.div>
           )
         })}
-      </nav>
+      </motion.nav>
 
       <motion.div
         className="sidebar-stats"
@@ -66,6 +85,6 @@ export function Sidebar() {
       <button className="logout-button" onClick={logout} type="button">
         Logout
       </button>
-    </aside>
+    </motion.aside>
   )
 }
