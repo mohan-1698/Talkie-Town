@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import { MessageSquare, MoreVertical, Pin, Send, Trash2, UserPlus } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Archive, MessageSquare, MoreVertical, Pin, Send, ShieldBan, Trash2, UserMinus, UserPlus } from 'lucide-react'
+import { motion } from 'framer-motion'
 import { useTalkie } from '../context/TalkieContext'
 import { useNavigate } from 'react-router-dom'
 
@@ -14,19 +14,27 @@ export function ChatPage() {
     conversations,
     messages,
     selectedConversationId,
+    unreadByConversation,
     selectConversation,
+    archiveConversation,
+    unfriendConversation,
+    blockConversation,
     sendMessage,
     deleteMessageForMe,
     deleteMessageForEveryone,
     togglePinMessage,
     setError,
-    refreshMessages,
   } = useTalkie()
   const navigate = useNavigate()
 
   const [draft, setDraft] = useState('')
-  const [conversationLoading, setConversationLoading] = useState(false)
   const [messageActionId, setMessageActionId] = useState('')
+  const [openConversationMenuId, setOpenConversationMenuId] = useState('')
+  const [conversationActionId, setConversationActionId] = useState('')
+  const messageListRef = useRef(null)
+  const conversationStackRef = useRef(null)
+  const lastConversationRef = useRef('')
+  const lastMessageCountRef = useRef(0)
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation._id === selectedConversationId),
@@ -38,26 +46,6 @@ export function ChatPage() {
     () => messages.filter((message) => message.isPinned && !message.isDeletedForEveryone),
     [messages],
   )
-
-  useEffect(() => {
-    if (!selectedConversationId) {
-      return undefined
-    }
-
-    let mounted = true
-    setConversationLoading(true)
-    refreshMessages(selectedConversationId)
-      .catch(() => {})
-      .finally(() => {
-        if (mounted) {
-          setConversationLoading(false)
-        }
-      })
-
-    return () => {
-      mounted = false
-    }
-  }, [selectedConversationId, refreshMessages])
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -81,6 +69,59 @@ export function ChatPage() {
       setMessageActionId('')
     }
   }
+
+  const runConversationAction = async (actionId, action) => {
+    try {
+      setConversationActionId(actionId)
+      setError('')
+      await action()
+      setOpenConversationMenuId('')
+    } catch (actionError) {
+      setError(actionError.response?.data?.error || 'Conversation action failed')
+    } finally {
+      setConversationActionId('')
+    }
+  }
+
+  useEffect(() => {
+    if (!messageListRef.current || !selectedConversationId) {
+      return
+    }
+
+    const switchedConversation = lastConversationRef.current !== selectedConversationId
+    const messageCountIncreased = messages.length > lastMessageCountRef.current
+    if (switchedConversation || messageCountIncreased) {
+      messageListRef.current.scrollTo({ top: messageListRef.current.scrollHeight, behavior: 'auto' })
+    }
+
+    lastConversationRef.current = selectedConversationId
+    lastMessageCountRef.current = messages.length
+  }, [selectedConversationId, messages])
+
+  useEffect(() => {
+    if (!openConversationMenuId) {
+      return undefined
+    }
+
+    const handlePointerDown = (event) => {
+      if (!conversationStackRef.current?.contains(event.target)) {
+        setOpenConversationMenuId('')
+      }
+    }
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setOpenConversationMenuId('')
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [openConversationMenuId])
 
   return (
     <div className="page-shell chat-shell">
@@ -113,22 +154,96 @@ export function ChatPage() {
             </button>
           </div>
 
-          <div className="conversation-stack">
+          <div className="conversation-stack" ref={conversationStackRef}>
             {conversations.map((conversation) => {
               const other = conversation.participants.find((user) => user._id !== me?.id)
               return (
-                <button
+                <div
                   key={conversation._id}
-                  type="button"
                   className={`conversation-item ${selectedConversationId === conversation._id ? 'active' : ''}`}
-                  onClick={() => selectConversation(conversation._id)}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    setOpenConversationMenuId('')
+                    selectConversation(conversation._id)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setOpenConversationMenuId('')
+                      selectConversation(conversation._id)
+                    }
+                  }}
                 >
-                  <div className="result-avatar">{other?.username?.[0]?.toUpperCase() || 'U'}</div>
-                  <div className="conversation-copy">
-                    <strong>@{other?.username || 'unknown'}</strong>
-                    <span>{conversation.lastMessage?.content || 'No messages yet'}</span>
+                  <div className="conversation-main-row">
+                    <div className="result-avatar">{other?.username?.[0]?.toUpperCase() || 'U'}</div>
+                    <div className="conversation-copy">
+                      <strong>@{other?.username || 'unknown'}</strong>
+                      <span>{conversation.lastMessage?.content || 'No messages yet'}</span>
+                    </div>
+                    <div className="conversation-actions-wrap" onClick={(event) => event.stopPropagation()}>
+                      {(unreadByConversation[conversation._id] || 0) > 0 ? (
+                        <span className="conversation-unread-badge">{unreadByConversation[conversation._id]}</span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="conversation-menu-button"
+                        onClick={() =>
+                          setOpenConversationMenuId((current) =>
+                            current === conversation._id ? '' : conversation._id,
+                          )
+                        }
+                        aria-label="Conversation options"
+                      >
+                        <MoreVertical size={14} />
+                      </button>
+                    </div>
                   </div>
-                </button>
+
+                  {openConversationMenuId === conversation._id ? (
+                    <div className="conversation-menu-inline" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="conversation-menu-item"
+                        disabled={conversationActionId === `${conversation._id}:archive`}
+                        onClick={() =>
+                          runConversationAction(`${conversation._id}:archive`, () =>
+                            archiveConversation(conversation._id),
+                          )
+                        }
+                      >
+                        <Archive size={14} />
+                        Archive
+                      </button>
+                      <button
+                        type="button"
+                        className="conversation-menu-item"
+                        disabled={conversationActionId === `${conversation._id}:unfriend`}
+                        onClick={() =>
+                          runConversationAction(`${conversation._id}:unfriend`, () =>
+                            unfriendConversation(conversation._id),
+                          )
+                        }
+                      >
+                        <UserMinus size={14} />
+                        Unfriend
+                      </button>
+                      <button
+                        type="button"
+                        className="conversation-menu-item danger"
+                        disabled={conversationActionId === `${conversation._id}:block`}
+                        onClick={() =>
+                          runConversationAction(`${conversation._id}:block`, () =>
+                            blockConversation(conversation._id),
+                          )
+                        }
+                      >
+                        <ShieldBan size={14} />
+                        Block
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               )
             })}
 
@@ -147,12 +262,9 @@ export function ChatPage() {
                     <span>Ready to chat</span>
                   </div>
                 </div>
-                <button type="button" className="icon-button">
-                  <MoreVertical size={18} />
-                </button>
               </header>
 
-              <div className="message-list">
+              <div className="message-list" ref={messageListRef}>
                 {pinnedMessages.length > 0 ? (
                   <section className="pinned-strip" aria-label="Pinned messages">
                     <span className="pinned-strip-title">Pinned</span>
@@ -167,18 +279,11 @@ export function ChatPage() {
                   </section>
                 ) : null}
 
-                <AnimatePresence>
-                  {messages.map((message) => {
-                    const own = message.sender?._id === me?.id
-                    const isBusy = messageActionId.startsWith(`${message._id}:`)
-                    return (
-                      <motion.article
-                        key={message._id}
-                        className={`message-bubble ${own ? 'own' : 'theirs'}`}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 10 }}
-                      >
+                {messages.map((message) => {
+                  const own = message.sender?._id === me?.id
+                  const isBusy = messageActionId.startsWith(`${message._id}:`)
+                  return (
+                    <article key={message._id} className={`message-bubble ${own ? 'own' : 'theirs'}`}>
                         <div className="message-action-row">
                           <div className="message-stamps">
                             {message.isPinned ? <span className="message-stamp pinned">PINNED</span> : null}
@@ -219,11 +324,10 @@ export function ChatPage() {
                           <span>{own ? 'You' : `@${message.sender?.username || 'friend'}`}</span>
                           <span>{formatTime(message.createdAt)}</span>
                         </footer>
-                      </motion.article>
-                    )
-                  })}
-                </AnimatePresence>
-                {!conversationLoading && messages.length === 0 ? (
+                    </article>
+                  )
+                })}
+                {messages.length === 0 ? (
                   <div className="empty-state">Start the conversation with a clean first message.</div>
                 ) : null}
               </div>

@@ -16,8 +16,11 @@ export function useTalkieSession() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [socketConnected, setSocketConnected] = useState(false)
+  const [unreadByConversation, setUnreadByConversation] = useState({})
+  const [incomingMessageTotal, setIncomingMessageTotal] = useState(0)
   const socketRef = useRef(null)
   const selectedConversationIdRef = useRef('')
+  const meIdRef = useRef('')
 
   const api = useMemo(
     () =>
@@ -42,6 +45,8 @@ export function useTalkieSession() {
     setMessages([])
     setFriends([])
     setIncomingRequests([])
+    setUnreadByConversation({})
+    setIncomingMessageTotal(0)
     setError('')
   }
 
@@ -138,6 +143,14 @@ export function useTalkieSession() {
 
   const selectConversation = async (conversationId) => {
     setSelectedConversationId(conversationId)
+    setUnreadByConversation((current) => {
+      if (!current[conversationId]) {
+        return current
+      }
+      const next = { ...current }
+      delete next[conversationId]
+      return next
+    })
     if (socketRef.current && conversationId) {
       socketRef.current.emit('conversation:join', conversationId)
     }
@@ -186,6 +199,35 @@ export function useTalkieSession() {
     return response.data
   }
 
+  const archiveConversation = async (conversationId) => {
+    await api.patch(`/api/conversations/${conversationId}/archive`)
+    setConversations((current) => current.filter((conversation) => conversation._id !== conversationId))
+    if (selectedConversationIdRef.current === conversationId) {
+      setSelectedConversationId('')
+      setMessages([])
+    }
+  }
+
+  const unfriendConversation = async (conversationId) => {
+    await api.patch(`/api/conversations/${conversationId}/unfriend`)
+    setConversations((current) => current.filter((conversation) => conversation._id !== conversationId))
+    await refreshFriends()
+    if (selectedConversationIdRef.current === conversationId) {
+      setSelectedConversationId('')
+      setMessages([])
+    }
+  }
+
+  const blockConversation = async (conversationId) => {
+    await api.patch(`/api/conversations/${conversationId}/block`)
+    setConversations((current) => current.filter((conversation) => conversation._id !== conversationId))
+    if (selectedConversationIdRef.current === conversationId) {
+      setSelectedConversationId('')
+      setMessages([])
+    }
+    await refreshFriends()
+  }
+
   useEffect(() => {
     bootstrap()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -194,6 +236,10 @@ export function useTalkieSession() {
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId
   }, [selectedConversationId])
+
+  useEffect(() => {
+    meIdRef.current = me?.id || ''
+  }, [me])
 
   useEffect(() => {
     if (!token) {
@@ -236,6 +282,11 @@ export function useTalkieSession() {
     })
 
     socket.on('conversation:messageCreated', (message) => {
+      const fromOtherUser = message?.sender?._id && message.sender._id !== meIdRef.current
+      if (fromOtherUser) {
+        setIncomingMessageTotal((current) => current + 1)
+      }
+
       setConversations((current) =>
         current
           .map((conversation) =>
@@ -253,6 +304,13 @@ export function useTalkieSession() {
           )
           .sort((left, right) => new Date(right.lastMessageAt) - new Date(left.lastMessageAt)),
       )
+
+      if (fromOtherUser && message.conversationId !== selectedConversationIdRef.current) {
+        setUnreadByConversation((current) => ({
+          ...current,
+          [message.conversationId]: (current[message.conversationId] || 0) + 1,
+        }))
+      }
 
       setMessages((current) => {
         if (message.conversationId !== selectedConversationIdRef.current) {
@@ -273,6 +331,22 @@ export function useTalkieSession() {
         return current.map((item) => (item._id === updatedMessage._id ? updatedMessage : item))
       })
       refreshConversations()
+    })
+
+    socket.on('conversation:removed', ({ conversationId }) => {
+      setConversations((current) => current.filter((conversation) => conversation._id !== conversationId))
+      setUnreadByConversation((current) => {
+        if (!current[conversationId]) {
+          return current
+        }
+        const next = { ...current }
+        delete next[conversationId]
+        return next
+      })
+      if (selectedConversationIdRef.current === conversationId) {
+        setSelectedConversationId('')
+        setMessages([])
+      }
     })
 
     return () => {
@@ -304,6 +378,8 @@ export function useTalkieSession() {
     error,
     loading,
     socketConnected,
+    unreadByConversation,
+    incomingMessageTotal,
     setError,
     logout,
     loginWithGoogle,
@@ -315,6 +391,9 @@ export function useTalkieSession() {
     respondToRequest,
     selectConversation,
     sendMessage,
+    archiveConversation,
+    unfriendConversation,
+    blockConversation,
     deleteMessageForMe,
     deleteMessageForEveryone,
     togglePinMessage,

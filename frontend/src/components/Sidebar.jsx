@@ -1,22 +1,23 @@
-import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, MessageSquare, PanelLeft, User, UserPlus } from 'lucide-react'
+import { MessageSquare, PanelLeft, User, UserPlus } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useTalkie } from '../context/TalkieContext'
 
 const navItems = [
-  { to: '/', label: 'Chat', icon: MessageSquare },
+  { to: '/', label: 'Chat', icon: MessageSquare, badge: 'messages' },
   { to: '/add-friends', label: 'Add Friends', icon: UserPlus, badge: 'requests' },
   { to: '/profile', label: 'Profile', icon: User },
 ]
 
 export function Sidebar() {
-  const { me, logout, friends, conversations, incomingRequests } = useTalkie()
-  const [collapsed, setCollapsed] = useState(true)
+  const { me, logout, friends, conversations, incomingRequests, unreadByConversation, incomingMessageTotal } = useTalkie()
+
+  const unseenCount = Object.values(unreadByConversation).reduce((sum, count) => sum + count, 0)
+  const seenCount = Math.max(incomingMessageTotal - unseenCount, 0)
 
   return (
     <motion.aside
-      className={`sidebar-shell ${collapsed ? 'collapsed' : ''}`}
+      className="sidebar-shell"
       initial={{ opacity: 0, x: -10 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.24, ease: 'easeOut' }}
@@ -26,15 +27,6 @@ export function Sidebar() {
           <PanelLeft size={18} />
           <span>Talkie Town</span>
         </div>
-        <button
-          type="button"
-          className="icon-button sidebar-toggle"
-          onClick={() => setCollapsed((current) => !current)}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
       </div>
 
       <div className="profile-chip">
@@ -48,7 +40,12 @@ export function Sidebar() {
       <motion.nav className="nav-stack" initial="hidden" animate="visible" variants={{ hidden: {}, visible: { transition: { staggerChildren: 0.04 } } }}>
         {navItems.map((item) => {
           const Icon = item.icon
-          const badgeCount = item.badge === 'requests' ? incomingRequests.length : 0
+          const badgeCount =
+            item.badge === 'requests'
+              ? incomingRequests.length
+              : item.badge === 'messages'
+                ? unseenCount
+                : 0
           return (
             <motion.div key={item.to} variants={{ hidden: { opacity: 0, x: -8 }, visible: { opacity: 1, x: 0 } }}>
               <NavLink
@@ -81,6 +78,17 @@ export function Sidebar() {
           <span>Friends</span>
         </div>
       </motion.div>
+
+      <div className="message-status-card">
+        <div>
+          <span>Seen</span>
+          <strong>{seenCount}</strong>
+        </div>
+        <div>
+          <span>Unseen</span>
+          <strong>{unseenCount}</strong>
+        </div>
+      </div>
 
       <button className="logout-button" onClick={logout} type="button">
         Logout

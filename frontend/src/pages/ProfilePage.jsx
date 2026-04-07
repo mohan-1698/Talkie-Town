@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Check, Copy, PencilLine, ShieldCheck } from 'lucide-react'
+import { Copy, PencilLine, ShieldCheck } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useTalkie } from '../context/TalkieContext'
 
@@ -74,7 +74,7 @@ export function ProfilePage() {
 
       <div className="profile-grid">
         <motion.form
-          className="panel form-panel"
+          className="panel form-panel profile-form"
           onSubmit={handleSave}
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -105,7 +105,7 @@ export function ProfilePage() {
             maxLength={24}
           />
 
-          <div className="hint-row">
+          <div className="hint-row profile-username-meta">
             <span>Suggested: @{suggestedUsername}</span>
             <span>Use lowercase, numbers, and underscores only</span>
           </div>
@@ -136,15 +136,17 @@ export function ProfilePage() {
             </button>
           </div>
 
-          <button className="primary-button" type="submit" disabled={saving}>
-            {saving ? 'Saving...' : 'Save username'}
-          </button>
+          <div className="profile-submit-row">
+            <button className="primary-button" type="submit" disabled={saving}>
+              {saving ? 'Saving...' : 'Save username'}
+            </button>
+          </div>
 
           {message ? <div className="notice-box">{message}</div> : null}
         </motion.form>
 
         <motion.div
-          className="panel info-panel"
+          className="panel info-panel profile-info"
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.06 }}

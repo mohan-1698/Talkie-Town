@@ -17,6 +17,7 @@ const allowedOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const jwtSecret = process.env.JWT_SECRET || 'dev-jwt-secret-change-me';
 const googleClientId = process.env.GOOGLE_CLIENT_ID || '';
 const googleClient = new OAuth2Client(googleClientId);
+const archivedConversationsByUser = new Map();
 
 const io = new Server(server, {
   cors: {
@@ -63,6 +64,47 @@ function toParticipantUser(user) {
 
 function makePairKey(userIdA, userIdB) {
   return [String(userIdA), String(userIdB)].sort().join(':');
+}
+
+function archiveConversationForUser(userId, conversationId) {
+  const current = archivedConversationsByUser.get(userId) || new Set();
+  current.add(String(conversationId));
+  archivedConversationsByUser.set(userId, current);
+}
+
+function getArchivedConversationSet(userId) {
+  return archivedConversationsByUser.get(userId) || new Set();
+}
+
+async function getBlockedUserIds(userId) {
+  const blockedRelations = await prisma.friendRequest.findMany({
+    where: {
+      status: 'blocked',
+      OR: [{ fromUserId: userId }, { toUserId: userId }],
+    },
+    select: { fromUserId: true, toUserId: true },
+  });
+
+  return new Set(
+    blockedRelations.map((item) =>
+      item.fromUserId === userId ? item.toUserId : item.fromUserId
+    )
+  );
+}
+
+async function areUsersBlocked(userIdA, userIdB) {
+  const blocked = await prisma.friendRequest.findFirst({
+    where: {
+      status: 'blocked',
+      OR: [
+        { fromUserId: userIdA, toUserId: userIdB },
+        { fromUserId: userIdB, toUserId: userIdA },
+      ],
+    },
+    select: { id: true },
+  });
+
+  return Boolean(blocked);
 }
 
 async function generateUniqueUsername(seed) {
@@ -305,6 +347,10 @@ app.post('/api/friend-requests', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'You cannot send a request to yourself' });
     }
 
+    if (await areUsersBlocked(fromUser.id, toUser.id)) {
+      return res.status(403).json({ error: 'This user is blocked' });
+    }
+
     const accepted = await prisma.friendRequest.findFirst({
       where: {
         status: 'accepted',
@@ -494,6 +540,9 @@ app.get('/api/friends', requireAuth, async (req, res) => {
 });
 
 app.get('/api/conversations', requireAuth, async (req, res) => {
+  const archivedSet = getArchivedConversationSet(req.userId);
+  const blockedUserIds = await getBlockedUserIds(req.userId);
+
   const conversations = await prisma.conversation.findMany({
     where: {
       participantIds: { has: req.userId },
@@ -534,7 +583,20 @@ app.get('/api/conversations', requireAuth, async (req, res) => {
     })
   );
 
-  return res.json(response);
+  const filtered = response.filter((conversation) => {
+    if (archivedSet.has(conversation._id)) {
+      return false;
+    }
+
+    const otherParticipant = conversation.participants.find((user) => user.id !== req.userId);
+    if (!otherParticipant) {
+      return true;
+    }
+
+    return !blockedUserIds.has(otherParticipant.id);
+  });
+
+  return res.json(filtered);
 });
 
 app.get('/api/conversations/:id/messages', requireAuth, async (req, res) => {
@@ -591,6 +653,11 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Message content exceeds 500 characters' });
     }
 
+    const recipientId = conversation.participantIds.find((id) => id !== req.userId);
+    if (recipientId && (await areUsersBlocked(req.userId, recipientId))) {
+      return res.status(403).json({ error: 'Messaging is disabled for blocked users' });
+    }
+
     const message = await prisma.message.create({
       data: {
         conversationId: conversation.id,
@@ -621,6 +688,106 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('Send message error:', error);
     return res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+app.patch('/api/conversations/:id/archive', requireAuth, async (req, res) => {
+  try {
+    const conversation = await getConversationIfMember(req.params.id, req.userId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    archiveConversationForUser(req.userId, conversation.id);
+    return res.json({ message: 'Conversation archived', conversationId: conversation.id });
+  } catch (error) {
+    console.error('Archive conversation error:', error);
+    return res.status(500).json({ error: 'Failed to archive conversation' });
+  }
+});
+
+app.patch('/api/conversations/:id/unfriend', requireAuth, async (req, res) => {
+  try {
+    const conversation = await getConversationIfMember(req.params.id, req.userId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const friendId = conversation.participantIds.find((id) => id !== req.userId);
+    if (!friendId) {
+      return res.status(400).json({ error: 'Friend not found for conversation' });
+    }
+
+    await prisma.friendRequest.updateMany({
+      where: {
+        status: 'accepted',
+        OR: [
+          { fromUserId: req.userId, toUserId: friendId },
+          { fromUserId: friendId, toUserId: req.userId },
+        ],
+      },
+      data: { status: 'removed' },
+    });
+
+    await prisma.conversation.delete({ where: { id: conversation.id } });
+
+    io.to(userRoom(req.userId)).emit('conversation:removed', { conversationId: conversation.id });
+    io.to(userRoom(friendId)).emit('conversation:removed', { conversationId: conversation.id });
+
+    return res.json({ message: 'User unfriended and conversation removed' });
+  } catch (error) {
+    console.error('Unfriend conversation error:', error);
+    return res.status(500).json({ error: 'Failed to unfriend user' });
+  }
+});
+
+app.patch('/api/conversations/:id/block', requireAuth, async (req, res) => {
+  try {
+    const conversation = await getConversationIfMember(req.params.id, req.userId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const blockedUserId = conversation.participantIds.find((id) => id !== req.userId);
+    if (!blockedUserId) {
+      return res.status(400).json({ error: 'User not found for conversation' });
+    }
+
+    await prisma.friendRequest.upsert({
+      where: {
+        fromUserId_toUserId: {
+          fromUserId: req.userId,
+          toUserId: blockedUserId,
+        },
+      },
+      update: { status: 'blocked' },
+      create: {
+        fromUserId: req.userId,
+        toUserId: blockedUserId,
+        status: 'blocked',
+      },
+    });
+
+    await prisma.friendRequest.updateMany({
+      where: {
+        OR: [
+          { fromUserId: blockedUserId, toUserId: req.userId },
+          { fromUserId: req.userId, toUserId: blockedUserId },
+        ],
+        NOT: { status: 'blocked' },
+      },
+      data: { status: 'removed' },
+    });
+
+    await prisma.conversation.delete({ where: { id: conversation.id } });
+
+    io.to(userRoom(req.userId)).emit('conversation:removed', { conversationId: conversation.id });
+    io.to(userRoom(blockedUserId)).emit('conversation:removed', { conversationId: conversation.id });
+
+    return res.json({ message: 'User blocked and conversation removed' });
+  } catch (error) {
+    console.error('Block conversation error:', error);
+    return res.status(500).json({ error: 'Failed to block user' });
   }
 });
 
